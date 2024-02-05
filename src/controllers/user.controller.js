@@ -4,6 +4,19 @@ import {User} from "../models/user.model.js";
 import {uploadOnCloudinary} from "../utils/cloudinary.js";
 import {ApiResponse} from "../utils/ApiResponse.js";
 
+const generateAccessAndRefreshTokens = async (userId)=>{
+
+    const user = await User.findById(userId);
+
+    const accessToken = await user.generateAccessToken();
+    const refreshToken = await user.generateRefreshToken();
+
+    user.refreshToken = refreshToken;
+    await user.save({validateBeforeSave : false}); // Used this validateBeforeSave: false because Database validates each time it saves but herewe don't need that 
+
+    return {accessToken, refreshToken};
+}
+
 const registerUser = asyncHandler( async (req, res) => {
     // get user details from frontend
     // validation - not empty
@@ -50,6 +63,8 @@ const registerUser = asyncHandler( async (req, res) => {
     const avatar = await uploadOnCloudinary(avatarLocalPath)
     const coverImage = await uploadOnCloudinary(coverImageLocalPath)
 
+    console.log("Avatar : ",avatar.url);
+    console.log("CoverImage : ",coverImage.url);
     if (!avatar) {
         throw new ApiError(400, "Avatar file is required")
     }
@@ -58,7 +73,7 @@ const registerUser = asyncHandler( async (req, res) => {
     const user = await User.create({
         fullname,
         avatar: avatar.url,
-        coverImage: coverImage?.url || "",
+        coverImage: coverImage?.url==null ?  "" : coverImage.url,
         email, 
         password,
         username: username.toLowerCase()
@@ -78,5 +93,58 @@ const registerUser = asyncHandler( async (req, res) => {
 
 } )
 
+const loginUser = asyncHandler(async (req,res)=>{
 
-export { registerUser };
+    //take data from body
+
+    const {email, username, password} = req.body;
+    console.log(`Email : `,email," Username : ",username," Password : ",password);
+    //validate data
+    if(
+        [email,username,password].some((fields)=>fields.trim() === "")
+    ){
+        throw new ApiError(400,"USername or Password is required");
+    }
+    //check if user exists or not
+
+    const user = await User.findOne({
+        $or: [{email},{username}]
+    })
+
+    if(!user){
+        throw new ApiError(404,"User with Email and Username doesnot exist.")
+    }
+
+    //check for password 
+    const isPasswordCorrect = await user.isPasswordCorrect(password);
+
+    if(!isPasswordCorrect){
+        throw new ApiError(401,"Invalid Credentials!!");
+    }
+    //send access and refresh token
+    const {accessToken, refreshToken} = await generateAccessAndRefreshTokens(user._id);
+
+    //send cookie
+    const loggedInUser = await User.findById(user._id).select("-password -refreshToken");
+
+    const options = {
+        httpOnly:true,
+        secure:true
+    }
+
+    return res
+    .status(200)
+    .cookie("accessToken",accessToken,options)
+    .cookie("refreshToken",refreshToken,options)
+    .json(
+        new ApiResponse(
+            200,
+            {
+                user: loggedInUser,accessToken,refreshToken
+            },
+            "User LoggedIn Successfully"
+        )
+    )
+})
+
+export { registerUser, loginUser };
